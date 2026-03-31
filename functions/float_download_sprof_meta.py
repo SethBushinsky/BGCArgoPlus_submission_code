@@ -126,7 +126,7 @@ def argo_gdac(save_to, lat_range=None,lon_range=None,start_date=None,end_date=No
 
     """
     # Paths
-    url_root = 'https://www.usgodae.org/ftp/outgoing/argo/'
+    url_root = 'https://nrlgodae1.nrlmry.navy.mil/ftp/outgoing/argo/' # TODO RB: 'https://www.usgodae.org/ftp/outgoing/argo/' changed to 'https://nrlgodae1.nrlmry.navy.mil/ftp/outgoing/argo/'
     dac_url_root = url_root + 'dac/'
     index_filename = 'argo_synthetic-profile_index.txt'
     # if save_to is None: save_to = root
@@ -239,7 +239,7 @@ def argo_gdac_CORE_floats(lat_range=None,lon_range=None,start_date=None,end_date
 
     """
     # Paths
-    url_root = 'https://www.usgodae.org/ftp/outgoing/argo/'
+    url_root = 'https://nrlgodae1.nrlmry.navy.mil/ftp/outgoing/argo/' # TODO RB: 'https://www.usgodae.org/ftp/outgoing/argo/' changed to 'https://nrlgodae1.nrlmry.navy.mil/ftp/outgoing/argo/'
     dac_url_root = url_root + 'dac/'
     index_filename = 'ar_index_global_prof.txt'
     if save_to is None: save_to = root
