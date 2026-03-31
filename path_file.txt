@@ -1,0 +1,2 @@
+argo_path=/Users/raphaelbajon/UHM_Ocean_BGC_Group Dropbox/Datasets/Data_Products/BGC_ARGO_GLOBAL/2025_01_24/Sprof/
+

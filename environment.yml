@@ -1,0 +1,18 @@
+name: bgcargoplus_env
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - xarray
+  - scipy
+  - matplotlib
+  - cartopy
+  - pip
+  - ipykernel
+  - gsw
+  - plotly
+  - dash
+  - dash-bootstrap-components
+  - tqdm
+  - pip:
+      # Add pip-only packages here if needed

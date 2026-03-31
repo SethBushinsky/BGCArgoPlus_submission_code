@@ -1,0 +1,12 @@
+numpy
+pandas
+xarray
+scipy
+matplotlib
+cartopy
+ipykernel
+gsw
+plotly
+dash
+dash-bootstrap-components
+tqdm

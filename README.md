@@ -40,3 +40,7 @@
 ## Example code for analyzing float data
 1.	***Read in netcdf files we have processed
 2.	***Make a few example plots or calculations using multiple floats
+
+## Informations
+
+`path_file.txt` gives the main path to the data. You need to change the path inside according to where you store the data.
