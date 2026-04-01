@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import os
 
-def float_month_separation(var, var_suffix, file, main_argo_dir, intermediate_gridding_dir):
+def float_month_separation(var, var_suffix, file, main_argo_dir, csv_output_dir):
     # open a processed float file, look for variables in a passed list, save into monthly files for each variable
     # file = '4903622_Sprof_BGCArgoPlus_full.nc'  # test file
 
@@ -66,7 +66,7 @@ def float_month_separation(var, var_suffix, file, main_argo_dir, intermediate_gr
             # month_df.to_csv(out_filename, index=False)
             print(f'Saved {out_filename}')
             # if year_month_dir does not exist, create it
-            month_path = intermediate_gridding_dir + var + '/' + f"{int(year)}_{month:02d}" + '/'
+            month_path = csv_output_dir + f"{int(year)}_{month:02d}" + '/'
             if not os.path.exists(month_path):
                 os.makedirs(month_path)
 

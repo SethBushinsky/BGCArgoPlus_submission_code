@@ -5,7 +5,7 @@ import xarray as xr
 from scipy import stats
 import warnings
 
-def month_grid(mon_dir, intermediate_gridding_dir, var, bins, targetz, targety, targetx, description, encoding, gridded_dir):
+def month_grid(mon_dir, csv_output_dir, var, bins, targetz, targety, targetx, description, encoding, gridded_dir):
     if mon_dir.__contains__('DS'):
         return
     year = int(mon_dir.split('_')[0])
@@ -14,7 +14,7 @@ def month_grid(mon_dir, intermediate_gridding_dir, var, bins, targetz, targety, 
     # month = 1
 
     # find all float files for that month
-    month_path = intermediate_gridding_dir + var + '/' + f"{year}_{month:02d}" + '/'
+    month_path = csv_output_dir + f"{year}_{month:02d}" + '/'
 
     float_month_files = [f for f in os.listdir(month_path) if f.endswith('.csv')]
     print(len(float_month_files), 'float files found for', year, month)
