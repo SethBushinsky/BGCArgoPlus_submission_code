@@ -38,5 +38,10 @@
 	- concatenates monthly into merged files ../processed/for_external_sharing/gridded/
 
 ## Example code for analyzing float data
-1.	***Read in netcdf files we have processed
-2.	***Make a few example plots or calculations using multiple floats
+Examples of different types of scripts to use for reading in and working with these data can be found here: https://github.com/Hi-Cycles/BGC_Argo_Plus_Code_Repository 
+
+Scripts currently available:
+- Float_Glodap_Obs_Density.ipynb
+- Float_file_exploration.ipynb
+- NCP_nitrate_drawdown.ipynb
+- Seasonal_Cycles.ipynb
