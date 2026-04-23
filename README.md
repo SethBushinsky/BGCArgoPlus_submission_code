@@ -37,6 +37,31 @@
 	- save out monthly files ../processed/for_external_sharing/gridded/monthly/
 	- concatenates monthly into merged files ../processed/for_external_sharing/gridded/
 
+## Packages required to run our processing code
+We originally made a .yml file available for creating an environment capable of running everything in this repository. However, I've found that it is much quicker and easier to install packages one by one or in groups for this repository, so instead of a .yml file here is a list of what you need to install. Let me know if I'm missing something.
+
+Via conda-forge
+ - numpy
+ - pandas
+ - xarray=2024.01.1
+ - netCDF4
+ - matplotlib
+ - jupyter
+ - python=3.12.*
+ - scipy
+ - gsw=3.4.*
+ - cartopy
+ - tqdm # for helpful progress bars
+ - pip
+ - dash
+ - dash-bootstrap-components
+ - seaborn
+
+ Via pip:
+   - PyCO2SYS==1.8.3
+   - matlabengine==9.13.9 # this is the version for matlab R2022b. May be challenging to install - can also try going to "/[matlabroot]\extern\engines\python" and running "python setup.py install"
+
+
 ## Example code for analyzing float data
 Examples of different types of scripts to use for reading in and working with these data can be found here: https://github.com/Hi-Cycles/BGC_Argo_Plus_Code_Repository 
 
@@ -45,3 +70,4 @@ Scripts currently available:
 - Float_file_exploration.ipynb
 - NCP_nitrate_drawdown.ipynb
 - Seasonal_Cycles.ipynb
+
