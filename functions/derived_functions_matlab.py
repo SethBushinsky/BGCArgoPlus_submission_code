@@ -9,11 +9,41 @@ import os.path
 import matplotlib.pyplot as plt
 import pandas as pd
 import matlab.engine
-
+import atexit
+import os 
+import matlab
 
 # ### LIAR/LIPHR wrapper
 # ## Functions for carbonate system calculations (pH, TALK etc)
 # MLD Calculations
+
+MATLAB_ENG = None
+
+def init_worker_matlab_engine(matlab_code_dir, verbose=False):
+    global MATLAB_ENG
+
+    if MATLAB_ENG is None:
+        if verbose:
+            print("Starting MATLAB engine in worker", flush=True)
+
+        MATLAB_ENG = matlab.engine.start_matlab("-nodisplay")
+        MATLAB_ENG.addpath(MATLAB_ENG.genpath(os.path.expanduser(matlab_code_dir)))
+
+        if verbose:
+            print("MATLAB engine ready in worker", flush=True)
+
+        atexit.register(_shutdown_worker_matlab_engine)
+
+
+def _shutdown_worker_matlab_engine():
+    global MATLAB_ENG
+    if MATLAB_ENG is not None:
+        try:
+            MATLAB_ENG.quit()
+        except Exception as e:
+            print(f"Warning shutting down MATLAB engine: {e}", flush=True)
+        finally:
+            MATLAB_ENG = None
 
 def sigma0(salinity,temperature,lon,lat,pressure):
     SA = gsw.SA_from_SP(salinity,
@@ -44,39 +74,51 @@ def spiciness0(salinity,temperature,lon,lat,pressure):
     
     return spiciness
 
-def calc_mld_wrapper(ds, suffix):
+def calc_mld_wrapper(ds, suffix, verbose):
+    if verbose: print('In calc_mld_wrapper')
     mld_deboyer_interp=np.zeros(len(ds['N_PROF']))
+    ref_depth = np.nan
     for k in range(len(ds.N_PROF.values)):
         par_subset = ['sigma0','PRES'+suffix,'depth']
         prof_data = ds[par_subset].isel(N_PROF=k).sortby('PRES'+suffix).dropna(subset=['sigma0'],dim='N_LEVELS')
         sigma_p = prof_data.sigma0.values
         dep_p = prof_data.depth.values
-
+        sigma_theta_crit = 0.03
         if (len(dep_p)==0): # this is also the case when sigma0 is absent
             continue
         if (len(dep_p) > 0 and dep_p[0] > 30): # do not calculate MLD if shallowest depth is >30m (could be different value)
             continue 
-
-        ref_depth = 10 if dep_p[0] <= 10 else 'shallowest'
+        if dep_p[0] <= 10:
+            ref_depth = 10
+        else:
+            ref_depth = 'shallowest'
+        if verbose: print(f'ref_depth = {ref_depth}')
         try:
             mld_deboyer_interp[k] = mld_cb.calc_mld(  
                                         dep_p,
                                         sigma_p,
                                         ref_depth=ref_depth,
                                         ref_reject=True,
-                                        sigma_theta_crit=0.03,
+                                        sigma_theta_crit=sigma_theta_crit,
                                         crit_method='interp',
                                         bottom_return='NaN',)
+            if verbose: print('MLD calculated for profile ' + str(k) + ' with ref_depth = ' + str(ref_depth))
         except:
             mld_deboyer_interp[k] = np.nan
             pass
     ds['MLD'] = xr.DataArray(mld_deboyer_interp, coords={'N_PROF': ds['N_PROF']}, dims=['N_PROF'])
+    ds['MLD'] = ds['MLD'].assign_attrs(long_name=f'Mixed Layer Depth (MLD)',
+                                                 standard_name='mixed_layer_depth',
+                                                 units='m',
+                                                 valid_min=0,
+                                                 valid_max=2000,
+                                                 comment=f'MLD calculated using de Boyer Montégut et al. (2004), sigma theta {sigma_theta_crit} critieria relative to a {ref_depth} reference depth. Added during BGC-Argo+ processing.')
     return ds 
 
 
-def LIPHR_matlab(LIPHR_path,Coordinates,Measurements,MeasIDVec,OAAdjustTF=False,VerboseTF=False):
+def LIPHR_matlab(LIPHR_path,Coordinates,Measurements,MeasIDVec, eng, OAAdjustTF=False,  VerboseTF=False):
 #launch MATLAB engine API
-    eng = matlab.engine.start_matlab()
+    # eng = matlab.engine.start_matlab()
 
     #convert inputs to MATLAB double
     Measurements = matlab.double([Measurements])
@@ -92,16 +134,16 @@ def LIPHR_matlab(LIPHR_path,Coordinates,Measurements,MeasIDVec,OAAdjustTF=False,
 
     #call MATLAB function
     results = eng.LIPHR(Coordinates,Measurements,MeasIDVec,'OAAdjustTF', OAAdjustTF, 'VerboseTF', VerboseTF)
-    eng.quit()
+    # eng.quit()
 
     results = np.asarray(results)   
     return results
 
 
-def ESPER_matlab(LIPHR_path,DesiredVariables,Coordinates,Measurements,MeasIDVec_ESPER,Equations, Dates, ESPER_type, VerboseTF, pHCalcTF):
+def ESPER_matlab(LIPHR_path,DesiredVariables,Coordinates,Measurements,MeasIDVec_ESPER,Equations, Dates, ESPER_type, eng, VerboseTF, pHCalcTF):
     # ESPER_type can be MX, NN, or LIR
     #launch MATLAB engine API
-    eng = matlab.engine.start_matlab()
+    # eng = matlab.engine.start_matlab()
 
     #convert inputs to MATLAB double
     Measurements = matlab.double([Measurements])
@@ -121,15 +163,15 @@ def ESPER_matlab(LIPHR_path,DesiredVariables,Coordinates,Measurements,MeasIDVec_
     #call MATLAB function
     results = eng.ESPER_wrapper_for_python(DesiredVariables,Coordinates,Measurements,MeasIDVec_ESPER,Equations,
                         Dates, ESPER_type, VerboseTF, pHCalcTF)
-    eng.quit()
+    # eng.quit()
 
     results = np.asarray(results)   
     return results
 
 
-def LIAR_matlab(LIAR_path,Coordinates,Measurements, MeasIDVec, pres_name, temp_name, sal_name,VerboseTF=False):
+def LIAR_matlab(LIAR_path,Coordinates,Measurements, MeasIDVec, pres_name, temp_name, sal_name, eng, VerboseTF=False):
 #launch MATLAB engine API
-    eng = matlab.engine.start_matlab()
+    # eng = matlab.engine.start_matlab()
 
     #convert inputs to MATLAB double
     Measurements = matlab.double([Measurements])
@@ -145,16 +187,16 @@ def LIAR_matlab(LIAR_path,Coordinates,Measurements, MeasIDVec, pres_name, temp_n
 
     #call MATLAB function
     results = eng.LIAR(Coordinates,Measurements,MeasIDVec,'VerboseTF',VerboseTF)
-    eng.quit()
+    # eng.quit()
 
     #convert matlab double output back to numpy array
     results = np.asarray(results)
 
     return results
 
-def LINR_matlab(LIAR_path,Coordinates,Measurements, MeasIDVec,VerboseTF=False):
+def LINR_matlab(LIAR_path,Coordinates,Measurements, MeasIDVec, eng, VerboseTF=False):
 #launch MATLAB engine API
-    eng = matlab.engine.start_matlab()
+    # eng = matlab.engine.start_matlab()
 
     #convert inputs to MATLAB double
     Measurements = matlab.double([Measurements])
@@ -170,7 +212,7 @@ def LINR_matlab(LIAR_path,Coordinates,Measurements, MeasIDVec,VerboseTF=False):
 
     #call MATLAB function
     results = eng.LINR(Coordinates,Measurements,MeasIDVec,'VerboseTF',VerboseTF)
-    eng.quit()
+    # eng.quit()
 
     #convert matlab double output back to numpy array
     results = np.asarray(results)
@@ -190,16 +232,20 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
     # calculating a number of different TA estimates for now to compare them all 
     argo_n['TALK_ESPER_NN' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['TALK_ESPER_NN' + data_type_to_process][:] = np.nan
+    
     argo_n['TALK_ESPER_LIR' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['TALK_ESPER_LIR' + data_type_to_process][:] = np.nan
+    
     argo_n['TALK_ESPER_MX' + data_type_to_process]= (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['TALK_ESPER_MX' + data_type_to_process][:] = np.nan
-
+    
     argo_n['PH_25C_TOTAL' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['PH_25C_TOTAL' + data_type_to_process][:] = np.nan
+        
     argo_n['PH_25C_0db_TOTAL' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['PH_25C_0db_TOTAL' + data_type_to_process][:] = np.nan
-
+    
+    
     # argo_n['DIC_LIAR' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     # argo_n['DIC_LIAR' + data_type_to_process][:] = np.nan
     # argo_n['pCO2_LIAR_W17' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
@@ -207,34 +253,44 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
     
     argo_n['DIC_ESPER_MX' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['DIC_ESPER_MX' + data_type_to_process][:] = np.nan
+    
+    
     argo_n['PCO2_ESPER_MX'+ data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['PCO2_ESPER_MX' + data_type_to_process][:] = np.nan
- 
+     
     argo_n['DIC_ESPER_MX_THERMO' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['DIC_ESPER_MX_THERMO' + data_type_to_process][:] = np.nan
+          
     argo_n['PCO2_ESPER_MX_THERMO'+ data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['PCO2_ESPER_MX_THERMO' + data_type_to_process][:] = np.nan
- 
+        
     argo_n['PCO2_ESPER_MX_W17'+ data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['PCO2_ESPER_MX_W17' + data_type_to_process][:] = np.nan
- 
+    
+            
     argo_n['DIC_ESPER_NN' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['DIC_ESPER_NN' + data_type_to_process][:] = np.nan
+    
+        
     argo_n['PCO2_ESPER_NN_W17' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['PCO2_ESPER_NN_W17' + data_type_to_process][:] = np.nan
-
+    
     argo_n['DIC_ESPER_LIR' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['DIC_ESPER_LIR' + data_type_to_process][:] = np.nan
+    
+        
     argo_n['PCO2_ESPER_LIR_W17' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['PCO2_ESPER_LIR_W17' + data_type_to_process][:] = np.nan
-
+    
+   
     argo_n['pH_insitu_corr' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     argo_n['pH_insitu_corr' + data_type_to_process][:] = np.nan
+      
     # argo_n['pH_25C_corr'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
     # argo_n.pH_25C_corr[:] = np.nan
     argo_n['bias_corr' + data_type_to_process] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof
     argo_n['bias_corr' + data_type_to_process][:] = np.nan
-
+    
     nprof_n = argo_n.sizes['N_PROF']
     ##### Calc float TALK       
     #repeat lats, lons to match pressure shape
@@ -307,12 +363,25 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
                                                     MeasIDVec_ESPER,
                                                     Equations_ESPER, 
                                                     dates_rep.flatten().tolist(), 
-                                                    'MX',
-                                                    0, 0)
+                                                    'MX', MATLAB_ENG,
+                                                    verbose, pHCalcTF=False)
     argo_n['TALK_ESPER_MX' + data_type_to_process] = (['N_PROF','N_LEVELS'],
                             np.reshape(np.asarray(results_TALK_ESPER_MX),argo_n.PH_IN_SITU_TOTAL_ADJUSTED.shape))
+    argo_n['TALK_ESPER_MX' + data_type_to_process] = argo_n['TALK_ESPER_MX' + data_type_to_process].assign_attrs(long_name='Total Alkalinity estimated using ESPER MX algorithm',
+                                                                        standard_name='total_alkalinity',
+                                                                        units = 'µequiv/kg',
+                                                                        valid_min = 0,
+                                                                        valid_max = 10000,
+                                                                        comment = 'Added during BGC-Argo+ processing.')
+        
     argo_n['TALK_BGCArgoPlus'] = argo_n['TALK_ESPER_MX' + data_type_to_process].copy()
-
+    argo_n['TALK_BGCArgoPlus'] = argo_n['TALK_BGCArgoPlus'].assign_attrs(long_name='Total Alkalinity estimated using ESPER MX algorithm. Current "best" estimate of TALK for BGC-Argo+.',
+                                                                    standard_name='total_alkalinity',
+                                                                    units = 'µequiv/kg',
+                                                                    valid_min = 0,
+                                                                    valid_max = 10000,
+                                                                    comment = 'Added during BGC-Argo+ processing.')
+    
     # calculate ESPER NN
     results_TALK_ESPER_NN = ESPER_matlab(matlab_code_dir,
                                                     DesiredVariables_ESPER,
@@ -321,11 +390,16 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
                                                     MeasIDVec_ESPER,
                                                     Equations_ESPER, 
                                                     dates_rep.flatten().tolist(), 
-                                                    'NN',
-                                                    0, 0)
+                                                    'NN', MATLAB_ENG,
+                                                    verbose, pHCalcTF=False)
     argo_n['TALK_ESPER_NN' + data_type_to_process] = (['N_PROF','N_LEVELS'],
                             np.reshape(np.asarray(results_TALK_ESPER_NN),argo_n.PH_IN_SITU_TOTAL_ADJUSTED.shape))
-    
+    argo_n['TALK_ESPER_NN' + data_type_to_process] = argo_n['TALK_ESPER_NN' + data_type_to_process].assign_attrs(long_name='Total Alkalinity estimated using ESPER neural network algorithm',
+                                                                    standard_name='total_alkalinity',
+                                                                    units = 'µequiv/kg',
+                                                                    valid_min = 0,
+                                                                    valid_max = 10000,
+                                                                    comment = 'Added during BGC-Argo+ processing.')
      # calculate ESPER LIR
     results_TALK_ESPER_LIR = ESPER_matlab(matlab_code_dir,
                                                     DesiredVariables_ESPER,
@@ -334,11 +408,16 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
                                                     MeasIDVec_ESPER,
                                                     Equations_ESPER, 
                                                     dates_rep.flatten().tolist(), 
-                                                    'LIR',
-                                                    0, 0)
+                                                    'LIR', MATLAB_ENG,
+                                                    verbose, pHCalcTF=False)
     argo_n['TALK_ESPER_LIR' + data_type_to_process] = (['N_PROF','N_LEVELS'],
                             np.reshape(np.asarray(results_TALK_ESPER_LIR),argo_n.PH_IN_SITU_TOTAL_ADJUSTED.shape))
-    
+    argo_n['TALK_ESPER_LIR' + data_type_to_process] = argo_n['TALK_ESPER_LIR' + data_type_to_process].assign_attrs(long_name='Total Alkalinity estimated using ESPER LIR algorithm',
+                                                                        standard_name='total_alkalinity',
+                                                                        units = 'µequiv/kg',
+                                                                        valid_min = 0,
+                                                                        valid_max = 10000,
+                                                                        comment = 'Added during BGC-Argo+ processing.')
     if verbose:
         print('calculating pH at a constant 25C')
     ##### Calculate float pH at 25C, DIC and apply bias corr
@@ -362,7 +441,12 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
             opt_buffers_mode=1,
     )
     argo_n['PH_25C_TOTAL' + data_type_to_process] = (['N_PROF','N_LEVELS'], results['pH_total_out']) # pH normalized to 25C. still w/ in situ pressure
-
+    argo_n['PH_25C_TOTAL' + data_type_to_process] = argo_n['PH_25C_TOTAL' + data_type_to_process].assign_attrs(long_name='PH on the Total Scale calculated at 25C',
+                                                                    standard_name='ph',
+                                                                    units = '',
+                                                                    valid_min = 0,
+                                                                    valid_max = 14,
+                                                                    comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
     if verbose:
         print('calculating pH at 25C and 0db')
     results = pyco2.sys(
@@ -385,7 +469,12 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
             opt_buffers_mode=1,
     )
     argo_n['PH_25C_0db_TOTAL' + data_type_to_process] = (['N_PROF','N_LEVELS'], results['pH_total_out']) # pH normalized to 25C and 0db 
-    
+    argo_n['PH_25C_0db_TOTAL' + data_type_to_process] = argo_n['PH_25C_0db_TOTAL' + data_type_to_process].assign_attrs(long_name='PH on the Total Scale calculated at 25C and 0 dbar',
+                                                                        standard_name='ph',
+                                                                        units = '',
+                                                                        valid_min = 0,
+                                                                        valid_max = 14,
+                                                                        comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
     # if verbose:
     #     print('calculating DIC LIAR and pCO2 without Williams bias correction')
     # # calculate pCO2 and DIC, using in situ temperature and pressure 
@@ -461,9 +550,36 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
     )
 
     argo_n['DIC_ESPER_MX' + data_type_to_process] = (['N_PROF','N_LEVELS'],results['dic'])  
+    argo_n['DIC_ESPER_MX' + data_type_to_process] = argo_n['DIC_ESPER_MX' + data_type_to_process].assign_attrs(long_name='Dissolved Inorganic Carbon estimated from pH and TALK_ESPER_MX',
+                                                                            standard_name='moles_of_carbon_per_unit_mass_of_seawater',
+                                                                            units = 'µmol/kg',
+                                                                            valid_min = 0,
+                                                                            valid_max = 3000,
+                                                                            comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
+    
     argo_n['PCO2_ESPER_MX' + data_type_to_process] = (['N_PROF','N_LEVELS'],results['pCO2_out']) 
+    argo_n['PCO2_ESPER_MX' + data_type_to_process] = argo_n['PCO2_ESPER_MX' + data_type_to_process].assign_attrs(long_name='Partial Pressure of Carbon Dioxide calculated from pH and TALK_ESPER_MX',
+                                                                                 standard_name='partial_pressure_carbon_dioxide_in_sea_water',
+                                                                                 units = 'µatm',
+                                                                                 valid_min = 0,
+                                                                                 valid_max = 2000,
+                                                                                 comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
+         
     argo_n['DIC_BGCArgoPlus'] = argo_n['DIC_ESPER_MX' + data_type_to_process].copy()
+    argo_n['DIC_BGCArgoPlus'] = argo_n['DIC_BGCArgoPlus'].assign_attrs(long_name='Dissolved Inorganic Carbon estimated from pH and TALK_ESPER_MX. Current "best" estimate of DIC for BGC-Argo+',
+                                                                                 standard_name='moles_of_carbon_per_unit_mass_of_seawater',
+                                                                                 units = 'µmol/kg',
+                                                                                 valid_min = 0,
+                                                                                 valid_max = 3000,
+                                                                                 comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
+         
     argo_n['PCO2_BGCArgoPlus'] = argo_n['PCO2_ESPER_MX' + data_type_to_process].copy() 
+    argo_n['PCO2_BGCArgoPlus'] = argo_n['PCO2_BGCArgoPlus'].assign_attrs(long_name='Partial Pressure of Carbon Dioxide calculated from pH and TALK_ESPER_MX. Current "best" estimate of PCO2 for BGC-Argo+',
+                                                                                 standard_name='partial_pressure_carbon_dioxide_in_sea_water',
+                                                                                 units = 'µatm',
+                                                                                 valid_min = 0,
+                                                                                 valid_max = 2000,
+                                                                                 comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
 
     if verbose:
         print('calculating DIC and pCO2 from ESPER MX without the Williams 2017 bias correction and WITH the Johnson et al. thermodynamic correction')
@@ -497,7 +613,21 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
     )
 
     argo_n['DIC_ESPER_MX_THERMO' + data_type_to_process] = (['N_PROF','N_LEVELS'],results['dic'])  
+    argo_n['DIC_ESPER_MX_THERMO' + data_type_to_process] = argo_n['DIC_ESPER_MX_THERMO' + data_type_to_process].assign_attrs(long_name='Dissolved Inorganic Carbon estimated from pH and TALK_ESPER_MX, with non-standard thermodynamic constants',
+                                                                                standard_name='moles_of_carbon_per_unit_mass_of_seawater',
+                                                                                units = 'µmol/kg',
+                                                                                valid_min = 0,
+                                                                                valid_max = 3000,
+                                                                                comment = 'Calculated using PyCO2SYS. Thermodynamic constants from Ken Johnson, personal communication. Added during BGC-Argo+ processing.')
+      
     argo_n['PCO2_ESPER_MX_THERMO' + data_type_to_process] = (['N_PROF','N_LEVELS'],results['pCO2_out']) 
+    argo_n['PCO2_ESPER_MX_THERMO' + data_type_to_process] = argo_n['PCO2_ESPER_MX_THERMO' + data_type_to_process].assign_attrs(long_name='Partial Pressure of Carbon Dioxide calculated from pH and TALK_ESPER_MX, with non-standard thermodynamic constants',
+                                                                                 standard_name='partial_pressure_carbon_dioxide_in_sea_water',
+                                                                                 units = 'µatm',
+                                                                                 valid_min = 0,
+                                                                                 valid_max = 2000,
+                                                                                 comment = 'Calculated using PyCO2SYS. Thermodynamic constants from Ken Johnson, personal communication. Added during BGC-Argo+ processing.')
+       
     # argo_n['DIC_BGCArgoPlus'] = argo_n['DIC_ESPER_MX_THERMO' + data_type_to_process].copy()
     # argo_n['PCO2_BGCArgoPlus'] = argo_n['PCO2_ESPER_MX_THERMO' + data_type_to_process].copy()
 
@@ -525,7 +655,12 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
     )
 
     argo_n['DIC_ESPER_NN' + data_type_to_process] = (['N_PROF','N_LEVELS'],results['dic'])  
-
+    argo_n['DIC_ESPER_NN' + data_type_to_process] = argo_n['DIC_ESPER_NN' + data_type_to_process].assign_attrs(long_name='Dissolved Inorganic Carbon estimated from pH and TALK_ESPER_NN',
+                                                                            standard_name='moles_of_carbon_per_unit_mass_of_seawater',
+                                                                            units = 'µmol/kg',
+                                                                            valid_min = 0,
+                                                                            valid_max = 3000,
+                                                                            comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
     if verbose:
         print('calculating DIC ESPER LIR')
     # calculate pCO2 and DIC, using in situ temperature and pressure 
@@ -550,7 +685,12 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
     )
 
     argo_n['DIC_ESPER_LIR' + data_type_to_process] = (['N_PROF','N_LEVELS'],results['dic'])  
-
+    argo_n['DIC_ESPER_LIR' + data_type_to_process] = argo_n['DIC_ESPER_LIR' + data_type_to_process].assign_attrs(long_name='Dissolved Inorganic Carbon estimated from pH and TALK_ESPER_LIR',
+                                                                            standard_name='moles_of_carbon_per_unit_mass_of_seawater',
+                                                                            units = 'µmol/kg',
+                                                                            valid_min = 0,
+                                                                            valid_max = 3000,
+                                                                            comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
     if verbose:
         print('calculating pH correction')
     for p in range(nprof_n):
@@ -583,7 +723,16 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
         # print(np.sum(~np.isnan(correction)))
         if np.sum(~np.isnan(correction.values))>0: # only do the correction if a non-nan value is present in "correction" 
             argo_n['bias_corr' + data_type_to_process][p] = np.nanmean(correction)
+            argo_n['bias_corr' + data_type_to_process] = argo_n['bias_corr' + data_type_to_process].assign_attrs(long_name='pH bias correction calculated per Williams et al. (2017)')
+            
             argo_n['pH_insitu_corr' + data_type_to_process][p,:] = argo_n['PH_IN_SITU_TOTAL' + data_type_to_process][p,:]+argo_n['bias_corr' + data_type_to_process][p]
+            argo_n['pH_insitu_corr' + data_type_to_process] = argo_n['pH_insitu_corr' + data_type_to_process].assign_attrs(long_name='In situ pH, with Williams et al. (2017) bias correction applied. ONLY FOR USE IN CALCULATING PCO2',
+                                                                                standard_name='sea_water_ph',
+                                                                                units = '',
+                                                                                valid_min = 0,
+                                                                                valid_max = 14,
+                                                                                comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
+    
             # argo_n.pH_25C_corr[p,:] = argo_n.PH_25C_TOTAL_ADJUSTED[p,:]+argo_n.bias_corr[p]
         else:
             if verbose:
@@ -634,7 +783,12 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
             )
 
     argo_n['PCO2_ESPER_MX_W17' + data_type_to_process] = (['N_PROF','N_LEVELS'],results['pCO2_out'])  
-
+    argo_n['PCO2_ESPER_MX_W17' + data_type_to_process] = argo_n['PCO2_ESPER_MX_W17' + data_type_to_process].assign_attrs(long_name='Partial Pressure of Carbon Dioxide calculated from pH and TALK_ESPER_MX, using the Williams et al (2017) pH bias correction',
+                                                                                 standard_name='partial_pressure_carbon_dioxide_in_sea_water',
+                                                                                 units = 'µatm',
+                                                                                 valid_min = 0,
+                                                                                 valid_max = 2000,
+                                                                                 comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
     results = pyco2.sys(
             par1=argo_n['TALK_ESPER_NN' + data_type_to_process], 
             par2=argo_n['pH_insitu_corr' + data_type_to_process],
@@ -656,7 +810,12 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
             )
 
     argo_n['PCO2_ESPER_NN_W17' + data_type_to_process] = (['N_PROF','N_LEVELS'],results['pCO2_out'])  
-
+    argo_n['PCO2_ESPER_NN_W17' + data_type_to_process] = argo_n['PCO2_ESPER_NN_W17' + data_type_to_process].assign_attrs(long_name='Partial Pressure of Carbon Dioxide calculated from pH and TALK_ESPER_NN, using the Williams et al (2017) pH bias correction',
+                                                                            standard_name='partial_pressure_carbon_dioxide_in_sea_water',
+                                                                            units = 'µatm',
+                                                                            valid_min = 0,
+                                                                            valid_max = 2000,
+                                                                            comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
     results = pyco2.sys(
             par1=argo_n['TALK_ESPER_LIR' + data_type_to_process], 
             par2=argo_n['pH_insitu_corr' + data_type_to_process],
@@ -678,15 +837,27 @@ def calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name
             )
 
     argo_n['PCO2_ESPER_LIR_W17' + data_type_to_process] = (['N_PROF','N_LEVELS'],results['pCO2_out'])  
- 
+    argo_n['PCO2_ESPER_LIR_W17' + data_type_to_process] = argo_n['PCO2_ESPER_LIR_W17' + data_type_to_process].assign_attrs(long_name='Partial Pressure of Carbon Dioxide calculated from pH and TALK_ESPER_LIR, using the Williams et al (2017) pH bias correction',
+                                                                             standard_name='partial_pressure_carbon_dioxide_in_sea_water',
+                                                                             units = 'µatm',
+                                                                             valid_min = 0,
+                                                                             valid_max = 2000,
+                                                                             comment = 'Calculated using PyCO2SYS. Added during BGC-Argo+ processing.')
     return argo_n
 
 # ### Calculate neutral density
-def neutral_density(sal, temp, press, lon, lat):
+def neutral_density(sal, temp, press, lon, lat, eng, verbose=False):
 
-    eng = matlab.engine.start_matlab()
-    eng.addpath(eng.genpath('~/Documents/MATLAB/eos_legacy_gamma_n'))
-
+    if verbose:
+        print('Starting Matlab Engine')
+    # eng = matlab.engine.start_matlab()
+    if verbose:
+        print('Adding path to Matlab Engine')
+    # eng.addpath(eng.genpath('~/Documents/MATLAB/eos_legacy_gamma_n'))
+    eng.addpath(eng.genpath("matlab_code_for_processing/Seawater properties/eos80_legacy_gamma_n"))
+    if verbose:
+        print('Path added')
+        
     s = sal.shape
     if len(s) > 1: # for 2d data like from Argo
         nden = np.ones(s)*np.nan
@@ -723,7 +894,7 @@ def neutral_density(sal, temp, press, lon, lat):
         nden = eng.eos80_legacy_gamma_n(psal_matlab[0],temp_matlab[0],pres_matlab[0],lon_matlab[0],lat_matlab[0])
         nden = np.asarray(nden[0])[0]
 
-    eng.quit()
+    # eng.quit()
 
     return nden
 
@@ -881,255 +1052,328 @@ def apply_outlier_detection(argo_n, output_dir, matched_file_list, verbose):
     
     return argo_n
 
-def calculate_derived_parameters(output_dir, file, matlab_code_dir, data_type_to_process, outlier_list, outlier_df, verbose=False):
-# pass interpolated dataset and non-interpolated dataset through calculations of: 
+def calculate_derived_parameters(output_dir, file, matlab_code_dir, data_type_to_process, outlier_list, outlier_df, verbose=False, flags_only=False):
+# pass dataset through calculations of: 
 #sigma0, conservative temperature (potential temperature) spiciness0, 
-# dir_types = [output_dir, interpolated_directory]
-# dir_types = [output_dir]
+
+    global MATLAB_ENG
+    required_var_missing = False
+    if MATLAB_ENG is None:
+        raise RuntimeError("MATLAB engine not initialized in worker")
     try:
         pres_name = 'PRES' + data_type_to_process
         temp_name = 'TEMP' + data_type_to_process
         sal_name = 'PSAL' + data_type_to_process
-        print(file)
 
         if verbose:
-            print('opening "filtered" file')
+            print(f'opening intput file {file}')
         argo_n = xr.open_dataset(output_dir+ file)
         if verbose:
             print(file + ' opened')
         if 'WMO_ID' not in argo_n.keys():
-            return
+            print(f'WMO_ID missing in {file}, skipping')
+            return {
+                    "file": file,
+                    "status": "skipped",
+                    "message": "WMO_ID missing",
+                }
+        if 'PSAL' not in argo_n.keys():
+            if verbose: print(f'PSAL missing in {file}, skipping')
+            return {
+                    "file": file,
+                    "status": "skipped",
+                    "message": "PSAL missing",
+                }
         wmo_n = argo_n['WMO_ID'].values
         if np.sum(~np.isnan(argo_n[temp_name]))==0:
             temp_name = 'TEMP_ADJUSTED'
             if np.sum(~np.isnan(argo_n[temp_name]))==0:
-                temp_name = 'TEMP'
+                required_var_missing = True
+            #     temp_name = 'TEMP'
         if np.sum(~np.isnan(argo_n[sal_name]))==0:
             sal_name = 'PSAL_ADJUSTED'
             if np.sum(~np.isnan(argo_n[sal_name]))==0:
-                sal_name = 'PSAL'
+                required_var_missing = True
+            #     sal_name = 'PSAL'
         if np.sum(~np.isnan(argo_n[pres_name]))==0:
             pres_name = 'PRES_ADJUSTED'
             if np.sum(~np.isnan(argo_n[pres_name]))==0:
-                pres_name = 'PRES'
-                if np.sum(~np.isnan(argo_n[pres_name]))==0:
-                    print('No valid "' + pres_name + '" for ' + str(wmo_n) + ', skipping creation of a processed file.')
-                    if os.path.isfile(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_full.nc'): # delete file if it already exists
-                        print('Existing processed file found, deleting')
-                        os.remove(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_full.nc')
-                    return
+                required_var_missing = True
+            #     pres_name = 'PRES'
+            #     if np.sum(~np.isnan(argo_n[pres_name]))==0:
+            #         print('No valid "' + pres_name + '" for ' + str(wmo_n) + ', skipping creation of a processed file.')
+            #         if os.path.isfile(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_full.nc'): # delete file if it already exists
+            #             print('Existing processed file found, deleting')
+            #             os.remove(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_full.nc')
+            #         return {
+            #                 "file": file,
+            #                 "status": "skipped",
+            #                 "message": "No valid pressure",
+            #             }
         
+        # if required variables are missing, then we still want to save out a "full" file, but we don't want to calculate derived parameters that require accurate temperature, salinity, or pressure
+        if required_var_missing==False:
+            if not flags_only:
+                # get list of outliers and remove
+                if verbose:
+                    print('getting list of outlier files')
+                matched_df = outlier_df.where(outlier_df['wmo']==wmo_n).dropna(how='all')
+                if verbose:
+                    print('Matched df:')
+                    print(matched_df)
+                if len(matched_df)>0:
+                    matched_file_list = outlier_list[matched_df.index]
+                    if verbose:
+                        print('loading and removing outliers from csv files')
+                    argo_n = apply_outlier_detection(argo_n, output_dir, matched_file_list, verbose)
+                else:
+                    if verbose:
+                        print('No outlier files found, skipping removal')
+                
 
-        # get list of outliers and remove
-        if verbose:
-            print('getting list of outlier files')
-        matched_df = outlier_df.where(outlier_df['wmo']==wmo_n).dropna(how='all')
-        if verbose:
-            print('Matched df:')
-            print(matched_df)
-        if len(matched_df)>0:
-            matched_file_list = outlier_list[matched_df.index]
             if verbose:
-                print('loading and removing outliers from csv files')
-            argo_n = apply_outlier_detection(argo_n, output_dir, matched_file_list, verbose)
-        else:
+                print('Calculating potential density, spiciness, conservative temperature')
+            argo_n['sigma0'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
+            argo_n.sigma0[:] = np.nan
+
+            argo_n['spiciness0'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
+            argo_n.spiciness0[:] = np.nan
+            # start_time = time.perf_counter()
+
+            lat_grid = np.repeat(argo_n.LATITUDE.values[:, np.newaxis], len(argo_n.N_LEVELS), axis=1)
+            lon_grid = np.repeat(argo_n.LONGITUDE.values[:, np.newaxis], len(argo_n.N_LEVELS), axis=1)
+
+            sigma0_temp, cons_Temp_temp = sigma0(argo_n[sal_name].values, 
+                            argo_n[temp_name].values,
+                            lon_grid,
+                            lat_grid,
+                            argo_n[pres_name].values)
+
+            sigma0_da = xr.DataArray(sigma0_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
+            cons_temp_da = xr.DataArray(cons_Temp_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
+
+            # Add the potential density and conservative temperature to the Dataset
+            argo_n['sigma0'] = sigma0_da
+            argo_n['sigma0'] = argo_n['sigma0'].assign_attrs(long_name='Potential Density Anomaly',
+                                                                               standard_name='potential_density_anomaly',
+                                                                               units='kg/m^3',
+                                                                               valid_min=0,
+                                                                               valid_max=50,
+                                                                               comment='Calculated from temperature, salinity, and pressure using the GSW library. Added during BGC-Argo+ processing.')
+            argo_n['cons_temp'] = cons_temp_da
+            argo_n['cons_temp'] = argo_n['cons_temp'].assign_attrs(long_name='Conservative Temperature',
+                                                                   standard_name='conservative_temperature',
+                                                                   units='degC',
+                                                                   valid_min=-10,
+                                                                   valid_max=50,
+                                                                   comment='Calculated from temperature, salinity, and pressure using the GSW library. Added during BGC-Argo+ processing.')
+            # calculate spiciness
+            spiciness0_temp = spiciness0(argo_n[sal_name].values, 
+                            argo_n[temp_name].values,
+                            lon_grid,
+                            lat_grid,
+                            argo_n[pres_name].values)
+
+            spiciness_da = xr.DataArray(spiciness0_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
+
+            # Add spiciness to the Dataset
+            argo_n['spiciness0'] = spiciness_da
+            argo_n['spiciness0'] = argo_n['spiciness0'].assign_attrs(long_name='Spiciness',
+                                                                   standard_name='spiciness',
+                                                                   units='',
+                                                                   valid_min=-50,
+                                                                   valid_max=50,
+                                                                   comment='Calculated using the GSW Spiciness0 function. Added during BGC-Argo+ processing.')
             if verbose:
-                print('No outlier files found, skipping removal')
+                print('Calculating neutral density')
+            # crate arrays for lon and lat to pass into neutral density function 
+            s = argo_n[sal_name].shape[1]
+            lons_array = np.array([[x] * s for x in argo_n.LONGITUDE.values])
+            lats_array = np.array([[x] * s for x in argo_n.LATITUDE.values])
+
+            # neutral density
+            nden_temp = neutral_density(argo_n[sal_name].values, argo_n[temp_name].values, argo_n[pres_name].values, lons_array, lats_array, MATLAB_ENG, verbose=verbose)
+            nden_temp_da = xr.DataArray(nden_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
+
+            # # Add neutral density to the Dataset
+            argo_n['gamma'] = nden_temp_da
+            argo_n['gamma'] = argo_n['gamma'].assign_attrs(long_name='Neutral Density',
+                                                                   standard_name='Neutral density anomaly',
+                                                                   units='kg/m^3',
+                                                                   valid_min=0,
+                                                                   valid_max=50,
+                                                                   comment='Calculated using SeaWater library of EOS-80 Matlab code (eos80_legacy_gamma_n). Added during BGC-Argo+ processing.')
+            if verbose:
+                print('Calculating depth')
+            # Calculate depth from pressure (convert negative depth to positive)
+            depth_temp = gsw.conversions.z_from_p(argo_n[pres_name].values,lat_grid)*(-1)
+            depth_da = xr.DataArray(depth_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
+            argo_n['depth'] = depth_da
+            argo_n['depth'] = argo_n['depth'].assign_attrs(long_name='Depth',
+                                                                   standard_name='depth',
+                                                                   units='m',
+                                                                   valid_min=0,
+                                                                   valid_max=11000,
+                                                                   comment='Calculated from pressure using the GSW library. Added during BGC-Argo+ processing.')
+            if verbose:
+                print('Calculating MLD')
+            # calculate mld
+            argo_n = calc_mld_wrapper(argo_n, suffix=data_type_to_process, verbose=verbose)
             
+            # calculate carbonate system parameters
+            if 'PH_IN_SITU_TOTAL_ADJUSTED' in argo_n.keys() and np.any(~np.isnan(argo_n.PH_IN_SITU_TOTAL_ADJUSTED)):
+                if verbose:     
+                    print('Calculating carbonate system parameters')
+                argo_n = calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name, sal_name, data_type_to_process, verbose)
+                # # temporarily running a second time, using the "Adjusted" data instead of the "ADJUSTED_RO" data
+                # # commenting out for now - would have to rerun flags without the other automated outlier detection things for actual comparison. Can implement once I've tested the "_RO" run
+                # argo_n = calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name, sal_name, '_ADJUSTED', verbose)
 
-        if verbose:
-            print('Calculating potential density, spiciness, conservative temperature')
-        argo_n['sigma0'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
-        argo_n.sigma0[:] = np.nan
+            if verbose:
+                print('Calculating O2 Sat. Conc.')
+            argo_n['DOXY_SAT'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
+            argo_n.DOXY_SAT[:] = np.nan
+            # argo_n['DOXY_SAT'] = O2sol.O2sol(argo_n[sal_name], argo_n[temp_name])
+            argo_n['DOXY_SAT'] = gsw.O2sol_SP_pt(argo_n[sal_name], argo_n[temp_name])
+            argo_n['DOXY_SAT'] = argo_n['DOXY_SAT'].assign_attrs(long_name='Oxygen saturation concentration',
+                                                                   standard_name='oxygen_saturation_concentration',
+                                                                   units='µmol/kg',
+                                                                   valid_min=0,
+                                                                   valid_max=600,
+                                                                   comment='Added during BGC-Argo+ processing.')
 
-        argo_n['spiciness0'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
-        argo_n.spiciness0[:] = np.nan
-        # start_time = time.perf_counter()
-
-        lat_grid = np.repeat(argo_n.LATITUDE.values[:, np.newaxis], len(argo_n.N_LEVELS), axis=1)
-        lon_grid = np.repeat(argo_n.LONGITUDE.values[:, np.newaxis], len(argo_n.N_LEVELS), axis=1)
-
-        sigma0_temp, cons_Temp_temp = sigma0(argo_n[sal_name].values, 
-                        argo_n[temp_name].values,
-                        lon_grid,
-                        lat_grid,
-                        argo_n[pres_name].values)
-
-        sigma0_da = xr.DataArray(sigma0_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
-        cons_temp_da = xr.DataArray(cons_Temp_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
-
-        # Add the potential density and conservative temperature to the Dataset
-        argo_n['sigma0'] = sigma0_da
-        argo_n['cons_temp'] = cons_temp_da
-
-        # calculate spiciness
-        spiciness0_temp = spiciness0(argo_n[sal_name].values, 
-                        argo_n[temp_name].values,
-                        lon_grid,
-                        lat_grid,
-                        argo_n[pres_name].values)
-
-        spiciness_da = xr.DataArray(spiciness0_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
-
-        # Add spiciness to the Dataset
-        argo_n['spiciness0'] = spiciness_da
-
-        if verbose:
-            print('Calculating neutral density')
-        # crate arrays for lon and lat to pass into neutral density function 
-        s = argo_n[sal_name].shape[1]
-        lons_array = np.array([[x] * s for x in argo_n.LONGITUDE.values])
-        lats_array = np.array([[x] * s for x in argo_n.LATITUDE.values])
-
-        # neutral density
-        nden_temp = neutral_density(argo_n[sal_name].values, argo_n[temp_name].values, argo_n[pres_name].values, lons_array, lats_array)
-        nden_temp_da = xr.DataArray(nden_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
-
-        # # Add neutral density to the Dataset
-        argo_n['gamma'] = nden_temp_da
-
-        if verbose:
-            print('Calculating depth')
-        # Calculate depth from pressure (convert negative depth to positive)
-        depth_temp = gsw.conversions.z_from_p(argo_n[pres_name].values,lat_grid)*(-1)
-        depth_da = xr.DataArray(depth_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
-        argo_n['depth'] = depth_da
-
-        if verbose:
-            print('Calculating MLD')
-        # calculate mld
-        argo_n = calc_mld_wrapper(argo_n, suffix=data_type_to_process)
-        
-        # calculate carbonate system parameters
-        if 'PH_IN_SITU_TOTAL_ADJUSTED' in argo_n.keys() and np.any(~np.isnan(argo_n.PH_IN_SITU_TOTAL_ADJUSTED)):
-            if verbose:     
-                print('Calculating carbonate system parameters')
-            argo_n = calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name, sal_name, data_type_to_process, verbose)
-            # # temporarily running a second time, using the "Adjusted" data instead of the "ADJUSTED_RO" data
-            # # commenting out for now - would have to rerun flags without the other automated outlier detection things for actual comparison. Can implement once I've tested the "_RO" run
-            # argo_n = calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name, sal_name, '_ADJUSTED', verbose)
-
-        if verbose:
-            print('Calculating O2 Sat. Conc.')
-        argo_n['DOXY_SAT'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
-        argo_n.DOXY_SAT[:] = np.nan
-        # argo_n['DOXY_SAT'] = O2sol.O2sol(argo_n[sal_name], argo_n[temp_name])
-        argo_n['DOXY_SAT'] = gsw.O2sol_SP_pt(argo_n[sal_name], argo_n[temp_name])
+        if flags_only:
+            file_ending = '_flags_mode_only'
+        else:
+            file_ending = '_full'
 
         if verbose:
             print('Saving processed file')
-        if os.path.isfile(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_full.nc'): # delete file if it already exists
-                os.remove(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_full.nc')
-        argo_n.to_netcdf(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_full.nc')
+        if os.path.isfile(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus'+file_ending+'.nc'): # delete file if it already exists
+                os.remove(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus'+file_ending+'.nc')
+        argo_n.to_netcdf(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus'+file_ending+'.nc')
 
-        # save a trimmed version with many non-essential variables removed
-        if verbose:
-            print('Saving pared down processed file')
-        strings_in_vars_to_drop = ['_QC_n_3_removed', '_QC_n_4_removed', '_profile_mode', 'ESPER', 'pH_insitu_corr', 'bias_corr']
-        for string in strings_in_vars_to_drop:
+        if not flags_only: # only save down a pared-down version if doing the full processing w/ outlier removal 
+            # save a trimmed version with many non-essential variables removed
             if verbose:
-                print('Dropping variables with "' + string + '" in the name')
-            vars_to_drop = [var for var in argo_n.variables if string in var]
-            if len(vars_to_drop)>0:
-                argo_n = argo_n.drop_vars(vars_to_drop)
-                if verbose: print('Dropped variables with : ' + string) 
-        if verbose:
-            print('attempting to save trimmed file')
-        if os.path.isfile(output_dir+ '../for_external_sharing/' + str(wmo_n)+'_Sprof_BGCArgoPlus.nc'): # delete file if it already exists
+                print('Saving pared down processed file')
+            strings_in_vars_to_drop = ['_QC_n_3_removed', '_QC_n_4_removed', '_profile_mode', 'ESPER', 'pH_insitu_corr', 'bias_corr']
+            for string in strings_in_vars_to_drop:
+                if verbose:
+                    print('Dropping variables with "' + string + '" in the name')
+                vars_to_drop = [var for var in argo_n.variables if string in var]
+                if len(vars_to_drop)>0:
+                    argo_n = argo_n.drop_vars(vars_to_drop)
+                    if verbose: print('Dropped variables with : ' + string) 
+            if verbose:
+                print('attempting to save trimmed file')
+            if not os.path.isdir(output_dir+ '../for_external_sharing/'):
+                os.mkdir(output_dir+ '../for_external_sharing/')
+            if os.path.isfile(output_dir+ '../for_external_sharing/' + str(wmo_n)+'_Sprof_BGCArgoPlus.nc'): # delete file if it already exists
                 if verbose: print('Old trimmed file exists, deleting')
                 os.remove(output_dir+ '../for_external_sharing/' + str(wmo_n)+'_Sprof_BGCArgoPlus.nc')
                 if verbose: print('file deleted')
-        argo_n.to_netcdf(output_dir+ '../for_external_sharing/' + str(wmo_n)+'_Sprof_BGCArgoPlus.nc')
+            argo_n.to_netcdf(output_dir+ '../for_external_sharing/' + str(wmo_n)+'_Sprof_BGCArgoPlus.nc')
 
 
         argo_n.close()        
+        return {
+            "file": file,
+            "status": "success",
+            "message": "",
+        }
+    except Exception as e:
+        msg = f"Error processing {file}: {e}"
+        print(msg, flush=True)
+        return {
+            "file": file,
+            "status": "error",
+            "message": str(e),
+        }
+
+# def calculate_carbonate_parameters_only(output_dir, file, matlab_code_dir, data_type_to_process, verbose=False):
+#     # pass interpolated dataset and non-interpolated dataset through calculations of: 
+#     #sigma0, conservative temperature (potential temperature) spiciness0, 
+#     global MATLAB_ENG
+#     if MATLAB_ENG is None:
+#         raise RuntimeError("MATLAB engine not initialized in worker")
+#     try:
+#         pres_name = 'PRES' + data_type_to_process
+#         temp_name = 'TEMP' + data_type_to_process
+#         sal_name = 'PSAL' + data_type_to_process
+#         print(f"Starting {file}", flush=True)
+
+#         if verbose:
+#             print('opening "filtered" file')
+#             try:
+#                 argo_n = xr.open_dataset(output_dir+ file)
+#             except Exception as e:
+#                 print(f"Error opening file {file}: {e}")
+#                 return
+#         if verbose:
+#             print(file + ' opened')
+#         if 'WMO_ID' not in argo_n.keys():
+#             if verbose:
+#                 print('WMO_ID not found in ' + file + ', skipping creation of a processed file.')
+#             return
+#         wmo_n = argo_n['WMO_ID'].values
+#         if np.sum(~np.isnan(argo_n[temp_name]))==0:
+#             temp_name = 'TEMP_ADJUSTED'
+#             if np.sum(~np.isnan(argo_n[temp_name]))==0:
+#                 temp_name = 'TEMP'
+#         if np.sum(~np.isnan(argo_n[sal_name]))==0:
+#             sal_name = 'PSAL_ADJUSTED'
+#             if np.sum(~np.isnan(argo_n[sal_name]))==0:
+#                 sal_name = 'PSAL'
+#         if np.sum(~np.isnan(argo_n[pres_name]))==0:
+#             pres_name = 'PRES_ADJUSTED'
+#             if np.sum(~np.isnan(argo_n[pres_name]))==0:
+#                 pres_name = 'PRES'
+#                 if np.sum(~np.isnan(argo_n[pres_name]))==0:
+#                     print('No valid "' + pres_name + '" for ' + str(wmo_n) + ', skipping creation of a processed file.')
+#                     if os.path.isfile(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_flags_mode_only.nc'): # delete file if it already exists
+#                         print('Existing processed file found, deleting')
+#                         os.remove(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_flags_mode_only.nc')
+#                     return
         
-    except:
-        print( 'Error processing: ' + file)
-    return
+#         if verbose:
+#             print('Calculating conservative temperature')
+#         # argo_n['sigma0'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
+#         # argo_n.sigma0[:] = np.nan
 
+#         # argo_n['spiciness0'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
+#         # argo_n.spiciness0[:] = np.nan
+#         # start_time = time.perf_counter()
 
-def calculate_carbonate_parameters_only(output_dir, file, matlab_code_dir, data_type_to_process, verbose=False):
-    # pass interpolated dataset and non-interpolated dataset through calculations of: 
-    #sigma0, conservative temperature (potential temperature) spiciness0, 
+#         lat_grid = np.repeat(argo_n.LATITUDE.values[:, np.newaxis], len(argo_n.N_LEVELS), axis=1)
+#         lon_grid = np.repeat(argo_n.LONGITUDE.values[:, np.newaxis], len(argo_n.N_LEVELS), axis=1)
 
-    try:
-        pres_name = 'PRES' + data_type_to_process
-        temp_name = 'TEMP' + data_type_to_process
-        sal_name = 'PSAL' + data_type_to_process
-        print(file)
+#         sigma0_temp, cons_Temp_temp = sigma0(argo_n[sal_name].values, 
+#                         argo_n[temp_name].values,
+#                         lon_grid,
+#                         lat_grid,
+#                         argo_n[pres_name].values)
 
-        if verbose:
-            print('opening "filtered" file')
-            try:
-                argo_n = xr.open_dataset(output_dir+ file)
-            except Exception as e:
-                print(f"Error opening file {file}: {e}")
-                return
-        if verbose:
-            print(file + ' opened')
-        if 'WMO_ID' not in argo_n.keys():
-            if verbose:
-                print('WMO_ID not found in ' + file + ', skipping creation of a processed file.')
-            return
-        wmo_n = argo_n['WMO_ID'].values
-        if np.sum(~np.isnan(argo_n[temp_name]))==0:
-            temp_name = 'TEMP_ADJUSTED'
-            if np.sum(~np.isnan(argo_n[temp_name]))==0:
-                temp_name = 'TEMP'
-        if np.sum(~np.isnan(argo_n[sal_name]))==0:
-            sal_name = 'PSAL_ADJUSTED'
-            if np.sum(~np.isnan(argo_n[sal_name]))==0:
-                sal_name = 'PSAL'
-        if np.sum(~np.isnan(argo_n[pres_name]))==0:
-            pres_name = 'PRES_ADJUSTED'
-            if np.sum(~np.isnan(argo_n[pres_name]))==0:
-                pres_name = 'PRES'
-                if np.sum(~np.isnan(argo_n[pres_name]))==0:
-                    print('No valid "' + pres_name + '" for ' + str(wmo_n) + ', skipping creation of a processed file.')
-                    if os.path.isfile(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_flags_mode_only.nc'): # delete file if it already exists
-                        print('Existing processed file found, deleting')
-                        os.remove(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_flags_mode_only.nc')
-                    return
-        
-        if verbose:
-            print('Calculating conservative temperature')
-        # argo_n['sigma0'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
-        # argo_n.sigma0[:] = np.nan
+#         # sigma0_da = xr.DataArray(sigma0_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
+#         cons_temp_da = xr.DataArray(cons_Temp_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
 
-        # argo_n['spiciness0'] = (['N_PROF','N_LEVELS'],np.empty(argo_n[pres_name].shape)) #nprof x nlevel
-        # argo_n.spiciness0[:] = np.nan
-        # start_time = time.perf_counter()
+#         # Add the potential density and conservative temperature to the Dataset
+#         # argo_n['sigma0'] = sigma0_da
+#         argo_n['cons_temp'] = cons_temp_da
 
-        lat_grid = np.repeat(argo_n.LATITUDE.values[:, np.newaxis], len(argo_n.N_LEVELS), axis=1)
-        lon_grid = np.repeat(argo_n.LONGITUDE.values[:, np.newaxis], len(argo_n.N_LEVELS), axis=1)
+#         # calculate carbonate system parameters
+#         if 'PH_IN_SITU_TOTAL_ADJUSTED' in argo_n.keys() and np.any(~np.isnan(argo_n.PH_IN_SITU_TOTAL_ADJUSTED)):
+#             if verbose:     
+#                 print('Calculating carbonate system parameters')
+#             argo_n = calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name, sal_name, data_type_to_process, verbose)
 
-        sigma0_temp, cons_Temp_temp = sigma0(argo_n[sal_name].values, 
-                        argo_n[temp_name].values,
-                        lon_grid,
-                        lat_grid,
-                        argo_n[pres_name].values)
+#         if verbose:
+#             print('Saving processed file', flush=True)
+#         if os.path.isfile(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_flags_mode_only.nc'): # delete file if it already exists
+#                 os.remove(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_flags_mode_only.nc')
+#         argo_n.to_netcdf(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_flags_mode_only.nc')
 
-        # sigma0_da = xr.DataArray(sigma0_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
-        cons_temp_da = xr.DataArray(cons_Temp_temp, dims=('N_PROF', 'N_LEVELS'), coords={'N_LEVELS': argo_n.N_LEVELS, 'N_PROF': argo_n.N_PROF})
-
-        # Add the potential density and conservative temperature to the Dataset
-        # argo_n['sigma0'] = sigma0_da
-        argo_n['cons_temp'] = cons_temp_da
-
-        # calculate carbonate system parameters
-        if 'PH_IN_SITU_TOTAL_ADJUSTED' in argo_n.keys() and np.any(~np.isnan(argo_n.PH_IN_SITU_TOTAL_ADJUSTED)):
-            if verbose:     
-                print('Calculating carbonate system parameters')
-            argo_n = calculate_carbonate_parameters(argo_n, matlab_code_dir, pres_name, temp_name, sal_name, data_type_to_process, verbose)
-
-        if verbose:
-            print('Saving processed file')
-        if os.path.isfile(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_flags_mode_only.nc'): # delete file if it already exists
-                os.remove(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_flags_mode_only.nc')
-        argo_n.to_netcdf(output_dir+str(wmo_n)+'_Sprof_BGCArgoPlus_flags_mode_only.nc')
-
-        argo_n.close()        
-    except:
-        print( 'Error processing: ' + file)
-    return
+#         argo_n.close()        
+#     except:
+#         print( 'Error processing: ' + file, flush=True)
+#     return
