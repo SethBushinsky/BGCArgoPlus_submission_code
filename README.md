@@ -49,16 +49,16 @@ Via conda-forge
  - jupyter
  - python=3.12.*
  - scipy
- - gsw=3.4.*
  - cartopy
  - tqdm # for helpful progress bars
  - pip
  - dash
- - dash-bootstrap-components
  - seaborn
 
  Via pip:
    - PyCO2SYS==1.8.3
+   - gsw=3.4.*
+   - dash-bootstrap-components
    - matlabengine==9.13.9 # this is the version for matlab R2022b. May be challenging to install - can also try going to "/[matlabroot]\extern\engines\python" and running "python setup.py install"
 
 
